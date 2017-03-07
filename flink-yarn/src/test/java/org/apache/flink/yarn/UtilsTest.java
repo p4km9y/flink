@@ -39,6 +39,7 @@ import org.apache.flink.yarn.messages.RequestNumberOfRegisteredResources;
 import org.apache.hadoop.yarn.api.records.Container;
 import org.apache.hadoop.yarn.api.records.ContainerId;
 import org.apache.hadoop.yarn.api.records.ContainerLaunchContext;
+import org.apache.hadoop.yarn.api.records.ExecutionType;
 import org.apache.hadoop.yarn.api.records.NodeId;
 import org.apache.hadoop.yarn.api.records.Priority;
 import org.apache.hadoop.yarn.api.records.Resource;
@@ -73,226 +74,239 @@ import static org.mockito.Mockito.when;
 
 public class UtilsTest extends TestLogger {
 
-	private static ActorSystem system;
+    private static ActorSystem system;
 
-	@BeforeClass
-	public static void setup() {
-		system = AkkaUtils.createLocalActorSystem(new Configuration());
-	}
 
-	@AfterClass
-	public static void teardown() {
-		JavaTestKit.shutdownActorSystem(system);
-	}
+    @BeforeClass
+    public static void setup() {
+        system = AkkaUtils.createLocalActorSystem(new Configuration());
+    }
 
-	@Test
-	public void testYarnFlinkResourceManagerJobManagerLostLeadership() throws Exception {
-		new JavaTestKit(system) {{
 
-			final Deadline deadline = new FiniteDuration(3, TimeUnit.MINUTES).fromNow();
+    @AfterClass
+    public static void teardown() {
+        JavaTestKit.shutdownActorSystem(system);
+    }
 
-			Configuration flinkConfig = new Configuration();
-			YarnConfiguration yarnConfig = new YarnConfiguration();
-			TestingLeaderRetrievalService leaderRetrievalService = new TestingLeaderRetrievalService();
-			String applicationMasterHostName = "localhost";
-			String webInterfaceURL = "foobar";
-			ContaineredTaskManagerParameters taskManagerParameters = new ContaineredTaskManagerParameters(
-				1l, 1l, 1l, 1, new HashMap<String, String>());
-			ContainerLaunchContext taskManagerLaunchContext = mock(ContainerLaunchContext.class);
-			int yarnHeartbeatIntervalMillis = 1000;
-			int maxFailedContainers = 10;
-			int numInitialTaskManagers = 5;
-			final YarnResourceManagerCallbackHandler callbackHandler = new YarnResourceManagerCallbackHandler();
-			AMRMClientAsync<AMRMClient.ContainerRequest> resourceManagerClient = mock(AMRMClientAsync.class);
-			NMClient nodeManagerClient = mock(NMClient.class);
-			UUID leaderSessionID = UUID.randomUUID();
 
-			final List<Container> containerList = new ArrayList<>();
+    @Test
+    public void testYarnFlinkResourceManagerJobManagerLostLeadership() throws Exception {
+        new JavaTestKit(system) {
 
-			for (int i = 0; i < numInitialTaskManagers; i++) {
-				containerList.add(new TestingContainer("container_" + i, "localhost"));
-			}
+            {
 
-			doAnswer(new Answer() {
-				int counter = 0;
-				@Override
-				public Object answer(InvocationOnMock invocation) throws Throwable {
-					if (counter < containerList.size()) {
-						callbackHandler.onContainersAllocated(
-							Collections.singletonList(
-								containerList.get(counter++)
-							));
-					}
-					return null;
-				}
-			}).when(resourceManagerClient).addContainerRequest(Matchers.any(AMRMClient.ContainerRequest.class));
+                final Deadline deadline = new FiniteDuration(3, TimeUnit.MINUTES).fromNow();
 
-			ActorRef resourceManager = null;
-			ActorRef leader1;
+                Configuration flinkConfig = new Configuration();
+                YarnConfiguration yarnConfig = new YarnConfiguration();
+                TestingLeaderRetrievalService leaderRetrievalService = new TestingLeaderRetrievalService();
+                String applicationMasterHostName = "localhost";
+                String webInterfaceURL = "foobar";
+                ContaineredTaskManagerParameters taskManagerParameters = new ContaineredTaskManagerParameters(1l, 1l, 1l, 1, new HashMap<String, String>());
+                ContainerLaunchContext taskManagerLaunchContext = mock(ContainerLaunchContext.class);
+                int yarnHeartbeatIntervalMillis = 1000;
+                int maxFailedContainers = 10;
+                int numInitialTaskManagers = 5;
+                final YarnResourceManagerCallbackHandler callbackHandler = new YarnResourceManagerCallbackHandler();
+                AMRMClientAsync<AMRMClient.ContainerRequest> resourceManagerClient = mock(AMRMClientAsync.class);
+                NMClient nodeManagerClient = mock(NMClient.class);
+                UUID leaderSessionID = UUID.randomUUID();
 
-			try {
-				leader1 = system.actorOf(
-					Props.create(
-						TestingUtils.ForwardingActor.class,
-						getRef(),
-						Option.apply(leaderSessionID)
-					));
+                final List<Container> containerList = new ArrayList<>();
 
-				resourceManager = system.actorOf(
-					Props.create(
-						TestingYarnFlinkResourceManager.class,
-						flinkConfig,
-						yarnConfig,
-						leaderRetrievalService,
-						applicationMasterHostName,
-						webInterfaceURL,
-						taskManagerParameters,
-						taskManagerLaunchContext,
-						yarnHeartbeatIntervalMillis,
-						maxFailedContainers,
-						numInitialTaskManagers,
-						callbackHandler,
-						resourceManagerClient,
-						nodeManagerClient
-					));
+                for (int i = 0; i < numInitialTaskManagers; i++) {
+                    containerList.add(new TestingContainer("container_" + i, "localhost"));
+                }
 
-				leaderRetrievalService.notifyListener(leader1.path().toString(), leaderSessionID);
+                doAnswer(new Answer() {
 
-				final AkkaActorGateway leader1Gateway = new AkkaActorGateway(leader1, leaderSessionID);
-				final AkkaActorGateway resourceManagerGateway = new AkkaActorGateway(resourceManager, leaderSessionID);
+                    int counter = 0;
 
-				doAnswer(new Answer() {
-					@Override
-					public Object answer(InvocationOnMock invocation) throws Throwable {
-						Container container = (Container) invocation.getArguments()[0];
-						resourceManagerGateway.tell(new NotifyResourceStarted(YarnFlinkResourceManager.extractResourceID(container)),
-							leader1Gateway);
-						return null;
-					}
-				}).when(nodeManagerClient).startContainer(Matchers.any(Container.class), Matchers.any(ContainerLaunchContext.class));
 
-				expectMsgClass(deadline.timeLeft(), RegisterResourceManager.class);
+                    @Override
+                    public Object answer(InvocationOnMock invocation) throws Throwable {
+                        if (counter < containerList.size()) {
+                            callbackHandler.onContainersAllocated(Collections.singletonList(containerList.get(counter++)));
+                        }
+                        return null;
+                    }
+                }).when(resourceManagerClient).addContainerRequest(Matchers.any(AMRMClient.ContainerRequest.class));
 
-				resourceManagerGateway.tell(new RegisterResourceManagerSuccessful(leader1, Collections.EMPTY_LIST));
+                ActorRef resourceManager = null;
+                ActorRef leader1;
 
-				for (int i = 0; i < containerList.size(); i++) {
-					expectMsgClass(deadline.timeLeft(), Acknowledge.class);
-				}
+                try {
+                    leader1 = system.actorOf(Props.create(TestingUtils.ForwardingActor.class, getRef(), Option.apply(leaderSessionID)));
 
-				Future<Object> taskManagerRegisteredFuture = resourceManagerGateway.ask(new NotifyWhenResourcesRegistered(numInitialTaskManagers), deadline.timeLeft());
+                    resourceManager = system.actorOf(Props.create(TestingYarnFlinkResourceManager.class, flinkConfig, yarnConfig, leaderRetrievalService,
+                            applicationMasterHostName, webInterfaceURL, taskManagerParameters, taskManagerLaunchContext, yarnHeartbeatIntervalMillis,
+                            maxFailedContainers, numInitialTaskManagers, callbackHandler, resourceManagerClient, nodeManagerClient));
 
-				Await.ready(taskManagerRegisteredFuture, deadline.timeLeft());
+                    leaderRetrievalService.notifyListener(leader1.path().toString(), leaderSessionID);
 
-				leaderRetrievalService.notifyListener(null, null);
+                    final AkkaActorGateway leader1Gateway = new AkkaActorGateway(leader1, leaderSessionID);
+                    final AkkaActorGateway resourceManagerGateway = new AkkaActorGateway(resourceManager, leaderSessionID);
 
-				leaderRetrievalService.notifyListener(leader1.path().toString(), leaderSessionID);
+                    doAnswer(new Answer() {
 
-				expectMsgClass(deadline.timeLeft(), RegisterResourceManager.class);
+                        @Override
+                        public Object answer(InvocationOnMock invocation) throws Throwable {
+                            Container container = (Container) invocation.getArguments()[0];
+                            resourceManagerGateway.tell(new NotifyResourceStarted(YarnFlinkResourceManager.extractResourceID(container)), leader1Gateway);
+                            return null;
+                        }
+                    }).when(nodeManagerClient).startContainer(Matchers.any(Container.class), Matchers.any(ContainerLaunchContext.class));
 
-				resourceManagerGateway.tell(new RegisterResourceManagerSuccessful(leader1, Collections.EMPTY_LIST));
+                    expectMsgClass(deadline.timeLeft(), RegisterResourceManager.class);
 
-				for (Container container: containerList) {
-					resourceManagerGateway.tell(
-						new NotifyResourceStarted(YarnFlinkResourceManager.extractResourceID(container)),
-						leader1Gateway);
-				}
+                    resourceManagerGateway.tell(new RegisterResourceManagerSuccessful(leader1, Collections.EMPTY_LIST));
 
-				for (int i = 0; i < containerList.size(); i++) {
-					expectMsgClass(deadline.timeLeft(), Acknowledge.class);
-				}
+                    for (int i = 0; i < containerList.size(); i++) {
+                        expectMsgClass(deadline.timeLeft(), Acknowledge.class);
+                    }
 
-				Future<Object> numberOfRegisteredResourcesFuture = resourceManagerGateway.ask(RequestNumberOfRegisteredResources.Instance, deadline.timeLeft());
+                    Future<Object> taskManagerRegisteredFuture = resourceManagerGateway.ask(new NotifyWhenResourcesRegistered(numInitialTaskManagers),
+                            deadline.timeLeft());
 
-				int numberOfRegisteredResources = (Integer) Await.result(numberOfRegisteredResourcesFuture, deadline.timeLeft());
+                    Await.ready(taskManagerRegisteredFuture, deadline.timeLeft());
 
-				assertEquals(numInitialTaskManagers, numberOfRegisteredResources);
-			} finally {
-				if (resourceManager != null) {
-					resourceManager.tell(PoisonPill.getInstance(), ActorRef.noSender());
-				}
-			}
-		}};
-	}
+                    leaderRetrievalService.notifyListener(null, null);
 
-	static class TestingContainer extends Container {
+                    leaderRetrievalService.notifyListener(leader1.path().toString(), leaderSessionID);
 
-		private final String id;
-		private final String host;
+                    expectMsgClass(deadline.timeLeft(), RegisterResourceManager.class);
 
-		TestingContainer(String id, String host) {
-			this.id = id;
-			this.host = host;
-		}
+                    resourceManagerGateway.tell(new RegisterResourceManagerSuccessful(leader1, Collections.EMPTY_LIST));
 
-		@Override
-		public ContainerId getId() {
-			ContainerId containerId = mock(ContainerId.class);
-			when(containerId.toString()).thenReturn(id);
+                    for (Container container : containerList) {
+                        resourceManagerGateway.tell(new NotifyResourceStarted(YarnFlinkResourceManager.extractResourceID(container)), leader1Gateway);
+                    }
 
-			return containerId;
-		}
+                    for (int i = 0; i < containerList.size(); i++) {
+                        expectMsgClass(deadline.timeLeft(), Acknowledge.class);
+                    }
 
-		@Override
-		public void setId(ContainerId containerId) {
+                    Future<Object> numberOfRegisteredResourcesFuture = resourceManagerGateway.ask(RequestNumberOfRegisteredResources.Instance,
+                            deadline.timeLeft());
 
-		}
+                    int numberOfRegisteredResources = (Integer) Await.result(numberOfRegisteredResourcesFuture, deadline.timeLeft());
 
-		@Override
-		public NodeId getNodeId() {
-			NodeId nodeId = mock(NodeId.class);
-			when(nodeId.getHost()).thenReturn(host);
+                    assertEquals(numInitialTaskManagers, numberOfRegisteredResources);
+                } finally {
+                    if (resourceManager != null) {
+                        resourceManager.tell(PoisonPill.getInstance(), ActorRef.noSender());
+                    }
+                }
+            }
+        };
+    }
 
-			return nodeId;
-		}
 
-		@Override
-		public void setNodeId(NodeId nodeId) {
+    static class TestingContainer extends Container {
 
-		}
+        private final String id;
+        private final String host;
+        ExecutionType et;
 
-		@Override
-		public String getNodeHttpAddress() {
-			return null;
-		}
+        TestingContainer(String id, String host) {
+            this.id = id;
+            this.host = host;
+        }
 
-		@Override
-		public void setNodeHttpAddress(String s) {
 
-		}
+        @Override
+        public ContainerId getId() {
+            ContainerId containerId = mock(ContainerId.class);
+            when(containerId.toString()).thenReturn(id);
 
-		@Override
-		public Resource getResource() {
-			return null;
-		}
+            return containerId;
+        }
 
-		@Override
-		public void setResource(Resource resource) {
 
-		}
+        @Override
+        public void setId(ContainerId containerId) {
 
-		@Override
-		public Priority getPriority() {
-			return null;
-		}
+        }
 
-		@Override
-		public void setPriority(Priority priority) {
 
-		}
+        @Override
+        public NodeId getNodeId() {
+            NodeId nodeId = mock(NodeId.class);
+            when(nodeId.getHost()).thenReturn(host);
 
-		@Override
-		public Token getContainerToken() {
-			return null;
-		}
+            return nodeId;
+        }
 
-		@Override
-		public void setContainerToken(Token token) {
 
-		}
+        @Override
+        public void setNodeId(NodeId nodeId) {
 
-		@Override
-		public int compareTo(Container o) {
-			return 0;
-		}
-	}
+        }
+
+
+        @Override
+        public String getNodeHttpAddress() {
+            return null;
+        }
+
+
+        @Override
+        public void setNodeHttpAddress(String s) {
+
+        }
+
+
+        @Override
+        public Resource getResource() {
+            return null;
+        }
+
+
+        @Override
+        public void setResource(Resource resource) {
+
+        }
+
+
+        @Override
+        public Priority getPriority() {
+            return null;
+        }
+
+
+        @Override
+        public void setPriority(Priority priority) {
+
+        }
+
+
+        @Override
+        public Token getContainerToken() {
+            return null;
+        }
+
+
+        @Override
+        public void setContainerToken(Token token) {
+
+        }
+
+
+        @Override
+        public int compareTo(Container o) {
+            return 0;
+        }
+
+
+        @Override
+        public ExecutionType getExecutionType() {
+            return et;
+        }
+
+
+        @Override
+        public void setExecutionType(ExecutionType arg0) {
+            et = arg0;
+        }
+    }
 }
