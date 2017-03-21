@@ -21,7 +21,12 @@ package org.apache.flink.table.catalog
 import java.lang.reflect.Modifier
 import java.net.URL
 
-import org.apache.commons.configuration.{ConfigurationException, ConversionException, PropertiesConfiguration}
+import org.apache.commons.configuration2.{FileBasedConfiguration, PropertiesConfiguration}
+import org.apache.commons.configuration2.builder.{FileBasedConfigurationBuilder}
+import org.apache.commons.configuration2.builder.fluent.{Parameters}
+import org.apache.commons.configuration2.ex.{ConfigurationException, ConversionException}
+import org.apache.commons.configuration2.convert.DefaultListDelimiterHandler
+
 import org.apache.flink.table.annotation.TableType
 import org.apache.flink.table.api.{AmbiguousTableSourceConverterException, NoMatchedTableSourceConverterException}
 import org.apache.flink.table.plan.schema.TableSourceTable
@@ -135,9 +140,14 @@ object ExternalTableSourceUtil {
     * @return scan package set
     */
   private def parseScanPackagesFromConfigFile(url: URL): Set[String] = {
+    val params = new Parameters()
+    val builder = new FileBasedConfigurationBuilder[FileBasedConfiguration](
+       classOf[PropertiesConfiguration]).configure(params.properties()
+         .setURL(url)
+         .setListDelimiterHandler(new DefaultListDelimiterHandler(','))
+    )
     try {
-      val config = new PropertiesConfiguration(url)
-      config.setListDelimiter(',')
+      val config = builder.getConfiguration();
       config.getStringArray("scan.packages").filterNot(_.isEmpty).toSet
     } catch {
       case e: ConfigurationException =>
